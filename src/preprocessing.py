@@ -129,7 +129,7 @@ def clean(verbose: bool = False) -> None:
 
     # Fetch and save property images
     downloaded = 0
-    for i, fn in enumerate(os.listdir(RAW_DIR)[:1000]):
+    for i, fn in enumerate(os.listdir(RAW_DIR)):
         if not fn.endswith(".json"):
             continue
 
