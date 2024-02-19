@@ -10,6 +10,10 @@ Our model's task is to classify images from a house into 3 buckets:
 - Average (middle 33\% of observed prices).
 - Expensive (top 33\% of observed prices).
 
+## Repo Structure
+
+Each notebook outlines a stage of the project, beginning with how we will preprocess the data in `preprocessing.ipynb`, a simple CNN in `cnn.ipynb` that classifies single images, a better model that uses attention (transformer) to classify multiple images together for each house in `vit.ipynb`, and finally a fine-tuned, pre-trained model from HuggingFace in `pretrained.ipynb`. The code in each notebook is cleaned up and modularized into `src`.
+
 ## A Simple CNN
 
 Let's begin with a simple classification model (CNN, no attention).
