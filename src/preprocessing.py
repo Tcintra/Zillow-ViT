@@ -28,9 +28,10 @@ CLEANED_DIR = os.path.join(DATA_DIR, "cleaned")
 os.makedirs(CLEANED_DIR, exist_ok=True)
 IMAGES_DIR = os.path.join(CLEANED_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
+META_CSV = "meta.csv"
+META_PATH = os.path.join(CLEANED_DIR, META_CSV)
 
 # Define some constants
-META_CSV = "meta.csv"
 IMAGE_SHAPE = (224, 224)
 EXPECTED_IMAGES = 3045
 BATCH_SIZE = 8
@@ -122,9 +123,9 @@ def clean(verbose: bool = False) -> None:
     FIXME help me make this faster!
     """
     # Store zpid -> price mapping
-    df = pd.DataFrame(columns=["zpid", "price", "price_category", "num_images"])
+    meta = pd.DataFrame(columns=["zpid", "price", "price_category", "num_images"])
 
-    # For printing
+    # For logging
     n = len(os.listdir(RAW_DIR))
 
     # Fetch and save property images
@@ -147,19 +148,23 @@ def clean(verbose: bool = False) -> None:
             if not price:
                 logger.warning("Price not found for %d. Skipping.", zpid)
                 continue
+        
+        num_images = len(data["originalPhotos"])
+        if not num_images:
+            logger.warning("No images found for %d. Skipping.", zpid)
+            continue
 
-        df.loc[len(df)] = {
+        meta.loc[len(meta)] = {  # type: ignore
             "zpid": zpid,
             "price": price,
             "price_category": None,
-            "num_images": len(data["originalPhotos"]),
-        }  # type: ignore
+            "num_images": num_images,
+        }
 
         # Skip if already downloaded
         if (
             os.path.exists(os.path.join(IMAGES_DIR, str(zpid)))
-            and len(os.listdir(os.path.join(IMAGES_DIR, str(zpid)))) > 0
-            and verbose
+            and len(os.listdir(os.path.join(IMAGES_DIR, str(zpid)))) == num_images
         ):
             downloaded += 1
             continue
@@ -173,10 +178,49 @@ def clean(verbose: bool = False) -> None:
         logger.info("Had already downloaded %d properties.", downloaded)
 
     # Save the zpid -> price mapping
-    df["price_category"] = pd.qcut(
-        df["price"], 3, labels=False
+    meta["price_category"] = pd.qcut(
+        meta["price"], 3, labels=False
     )  # create our target variable
-    df.to_csv(os.path.join(CLEANED_DIR, META_CSV), index=False)
+    meta.to_csv(META_PATH, index=False)
+
+    check_corrupted_images()
+
+
+def check_corrupted_images() -> None:
+    """
+    Some images might be corrupted and can't be opened.
+    If this is the case, remove them from the dataset and
+    update our metadata.
+
+    TODO should cache somewhere which images are corrupted
+    so we don't try and re-download them next time we run
+    clean().
+    """
+    meta = pd.read_csv(META_PATH, index_col=0)
+    corrupted = 0
+    for zpid_str in os.listdir(IMAGES_DIR):
+        zpid_dir = os.path.join(IMAGES_DIR, zpid_str)
+        if not os.path.isdir(zpid_dir):
+            continue
+        zpid_int = int(zpid_str)
+        for fn in os.listdir(zpid_dir):
+            fp = os.path.join(zpid_dir, fn)
+            try:
+                Image.open(fp)
+            except Exception as e:
+                logger.warning("Corrupted image: %s", fp)
+                os.remove(fp)
+                corrupted += 1
+                meta.loc[zpid_int, "num_images"] -= 1  # type: ignore
+                # Remove the property if no images left
+                if meta.loc[zpid_int, "num_images"] == 0:
+                    meta.drop(zpid_int, inplace=True)
+                    os.remove(zpid_dir)
+    assert meta["num_images"].min() > 0
+    if corrupted:
+        logger.info("Removed %d corrupted images.", corrupted)
+        meta.reset_index(inplace=True)
+        meta.to_csv(META_PATH, index=False)
 
 
 class HousingDataset(Dataset):
@@ -185,25 +229,38 @@ class HousingDataset(Dataset):
     """
 
     def __init__(
-        self, prices_path: str, img_dir: str, transform: transforms.Compose
+        self,
+        prices_path: str,
+        img_dir: str,
+        transform: transforms.Compose,
+        use_all_images: bool = False,
     ) -> None:
-        self.meta = pd.read_csv(prices_path)
-        self.meta = self.meta[self.meta["num_images"] > 0]
+        self.meta = pd.read_csv(prices_path, index_col=0)
+        self.meta = self.meta[self.meta["num_images"] > 0].reset_index()
         self.img_dir = img_dir
         self.transform = transform
+        self.use_all_images = use_all_images
+        self.idx_keys = self.meta["num_images"].cumsum()  # index into property
 
     def __len__(self) -> int:
-        return len(self.meta)
+        if self.use_all_images:
+            return self.idx_keys.iloc[-1]
+        return self.meta.shape[0]
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        meta = self.meta.iloc[idx]
+        if self.use_all_images:
+            property_index, image_cumsum = next(
+                iter(self.idx_keys[self.idx_keys > idx].items())
+            )
+            meta = self.meta.iloc[property_index]  # type: ignore
+            property_num_images = meta["num_images"]
+            image_index = idx - (image_cumsum - property_num_images)
+        else:
+            meta = self.meta.iloc[idx]
+            image_index = 0
         property_dir = os.path.join(self.img_dir, str(meta["zpid"]))
         images = os.listdir(property_dir)
-        image = Image.open(
-            os.path.join(
-                property_dir, images[0]
-            )  # Assuming only one image per property
-        )
+        image = Image.open(os.path.join(property_dir, images[image_index]))
         tensor = self.transform(image)
         label: int = meta["price_category"]
         return tensor, label
@@ -229,7 +286,7 @@ def get_housing_dataset() -> HousingDataset:
     Return the dataset.
     """
     return HousingDataset(
-        prices_path=os.path.join(CLEANED_DIR, META_CSV),
+        prices_path=META_PATH,
         img_dir=IMAGES_DIR,
         transform=get_transform(),
     )
@@ -243,7 +300,7 @@ def main() -> None:
     clean(verbose=True)
     logger.info("Data preprocessing complete.")
     housing_dataset = HousingDataset(
-        prices_path=os.path.join(CLEANED_DIR, META_CSV),
+        prices_path=META_PATH,
         img_dir=IMAGES_DIR,
         transform=get_transform(),
     )
