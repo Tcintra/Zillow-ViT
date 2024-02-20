@@ -1,8 +1,9 @@
-- Clean the entire dataset.
+- Update to use all images instead of just one per property.
 - Test the CNN in the cnn.ipynb notebook.
 - Try to port it over to running on GPU using Google Collab or purchase a small VM with a GPU.
 - Add optimizations to make the model faster.
 - Check if the model is overfitting, if it is, implement dropout.
 - Try using different images and see if this changes anything.
 - Consider other optimizations to the simple CNN before moving to transformers. Perhaps add another layer, try reducing/increasing dimensionality, try asking for more data, etc..
+- Learning rate decay, fine-tune learning rate.
 - Then move onto transformers.

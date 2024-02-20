@@ -30,7 +30,7 @@ IMAGES_DIR = os.path.join(CLEANED_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 # Define some constants
-PRICES_CSV = "prices.csv"
+META_CSV = "meta.csv"
 IMAGE_SHAPE = (224, 224)
 EXPECTED_IMAGES = 3045
 BATCH_SIZE = 8
@@ -122,7 +122,7 @@ def clean(verbose: bool = False) -> None:
     FIXME help me make this faster!
     """
     # Store zpid -> price mapping
-    df = pd.DataFrame(columns=["zpid", "price", "price_category"])
+    df = pd.DataFrame(columns=["zpid", "price", "price_category", "num_images"])
 
     # For printing
     n = len(os.listdir(RAW_DIR))
@@ -148,7 +148,12 @@ def clean(verbose: bool = False) -> None:
                 logger.warning("Price not found for %d. Skipping.", zpid)
                 continue
 
-        df.loc[len(df)] = {"zpid": zpid, "price": price, "price_category": None}  # type: ignore
+        df.loc[len(df)] = {
+            "zpid": zpid,
+            "price": price,
+            "price_category": None,
+            "num_images": len(data["originalPhotos"]),
+        }  # type: ignore
 
         # Skip if already downloaded
         if (
@@ -171,7 +176,7 @@ def clean(verbose: bool = False) -> None:
     df["price_category"] = pd.qcut(
         df["price"], 3, labels=False
     )  # create our target variable
-    df.to_csv(os.path.join(CLEANED_DIR, "prices.csv"), index=False)
+    df.to_csv(os.path.join(CLEANED_DIR, META_CSV), index=False)
 
 
 class HousingDataset(Dataset):
@@ -182,15 +187,16 @@ class HousingDataset(Dataset):
     def __init__(
         self, prices_path: str, img_dir: str, transform: transforms.Compose
     ) -> None:
-        self.price_map = pd.read_csv(prices_path)
+        self.meta = pd.read_csv(prices_path)
+        self.meta = self.meta[self.meta["num_images"] > 0]
         self.img_dir = img_dir
         self.transform = transform
 
     def __len__(self) -> int:
-        return len(self.price_map)
+        return len(self.meta)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        meta = self.price_map.iloc[idx]
+        meta = self.meta.iloc[idx]
         property_dir = os.path.join(self.img_dir, str(meta["zpid"]))
         images = os.listdir(property_dir)
         image = Image.open(
@@ -218,6 +224,17 @@ def get_transform() -> transforms.Compose:
     )
 
 
+def get_housing_dataset() -> HousingDataset:
+    """
+    Return the dataset.
+    """
+    return HousingDataset(
+        prices_path=os.path.join(CLEANED_DIR, META_CSV),
+        img_dir=IMAGES_DIR,
+        transform=get_transform(),
+    )
+
+
 def main() -> None:
     """
     Download all the images and preprocess a sample batch
@@ -226,8 +243,8 @@ def main() -> None:
     clean(verbose=True)
     logger.info("Data preprocessing complete.")
     housing_dataset = HousingDataset(
-        prices_path=os.path.join(CLEANED_DIR, "prices.csv"),
-        img_dir=os.path.join(CLEANED_DIR, "images"),
+        prices_path=os.path.join(CLEANED_DIR, META_CSV),
+        img_dir=IMAGES_DIR,
         transform=get_transform(),
     )
     data_loader = DataLoader(
